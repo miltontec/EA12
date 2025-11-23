@@ -318,45 +318,28 @@ struct DirectionalMetrics {
     }
     
     // Obtener WinRate total combinado (BUY + SELL)
+    // FIX: Usar Laplace Smoothing consistente con buyWinRate/sellWinRate
     double GetTotalWinRate() {
         int totalTrades = GetTotalTrades();
         int totalWins = GetTotalWins();
-        return (totalTrades > 0) ? (double)totalWins / totalTrades : 0.0;
+        // Laplace smoothing: (Wins + 1) / (Trades + 2)
+        return (double)(totalWins + 1) / (double)(totalTrades + 2);
     }
     
     // Obtener Profit Factor total combinado
+    // FIX: Usar Gross Profit/Loss acumulados (consistente con buyProfitFactor/sellProfitFactor)
     double GetTotalProfitFactor() {
-        int totalTrades = GetTotalTrades();
-        int totalLosses = totalTrades - GetTotalWins();
-        
-        if(totalLosses == 0) return 10.0; // No hay pérdidas
-        if(GetTotalWins() == 0) return 0.0; // Solo pérdidas
-        
-        // Calcular promedio ponderado de avg wins y losses
-        double totalAvgWin = 0.0;
-        double totalAvgLoss = 0.0;
-        
-        if(buyWins > 0 && sellWins > 0) {
-            totalAvgWin = (buyAvgWin * buyWins + sellAvgWin * sellWins) / GetTotalWins();
-        } else if(buyWins > 0) {
-            totalAvgWin = buyAvgWin;
-        } else if(sellWins > 0) {
-            totalAvgWin = sellAvgWin;
+        // Sumar gross profit y gross loss de ambas direcciones
+        double totalGrossProfit = buyGrossProfit + sellGrossProfit;
+        double totalGrossLoss = buyGrossLoss + sellGrossLoss;
+
+        // Calcular PF real: GrossProfit / GrossLoss
+        if(totalGrossLoss > 0) {
+            return totalGrossProfit / totalGrossLoss;
+        } else {
+            // Sin pérdidas: retornar 10.0 (cap) si hay profit, 0.0 si no hay nada
+            return (totalGrossProfit > 0) ? 10.0 : 0.0;
         }
-        
-        int buyLosses = buyTrades - buyWins;
-        int sellLosses = sellTrades - sellWins;
-        
-        if(buyLosses > 0 && sellLosses > 0) {
-            totalAvgLoss = (buyAvgLoss * buyLosses + sellAvgLoss * sellLosses) / totalLosses;
-        } else if(buyLosses > 0) {
-            totalAvgLoss = buyAvgLoss;
-        } else if(sellLosses > 0) {
-            totalAvgLoss = sellAvgLoss;
-        }
-        
-        double totalWinRate = GetTotalWinRate();
-        return (totalAvgLoss > 0) ? (totalAvgWin * totalWinRate) / (totalAvgLoss * (1 - totalWinRate)) : 1.0;
     }
     
     // Obtener Expectancy total combinado
