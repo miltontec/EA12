@@ -1035,8 +1035,10 @@ struct ML_ContextualPerformanceCell {
         accumulatedProfit += profit;
         lastSignalTime = TimeCurrent();
 
-        // Calcular métricas
-        winRate = (totalSignals > 0) ? (double)wins / totalSignals : 0.5;
+        // FIX: Laplace Smoothing for Win Rate (Bayesian estimator)
+        // Formula: (Wins + 1) / (TotalSignals + 2)
+        // Prevents extreme values (0% or 100%) with few samples
+        winRate = (double)(wins + 1) / (double)(totalSignals + 2);
         avgProfit = (totalSignals > 0) ? accumulatedProfit / totalSignals : 0.0;
 
         // Actualizar EMA de performance (alpha = 0.15 para respuesta rápida)
@@ -1321,11 +1323,11 @@ public:
 
         //--- FÓRMULA DE PESO CONTEXTUAL AVANZADA ---
 
-        // 1. Multiplicador basado en Win Rate contextual
+        // 1. Multiplicador basado en Win Rate contextual (FIX: More conservative)
         double baseWR = 0.50;  // Win rate neutral
         double contextWR = cell.winRate;
-        double wrMultiplier = 1.0 + (contextWR - baseWR) * 2.5;  // -1.25x a +1.25x
-        wrMultiplier = MathMax(0.20, MathMin(3.0, wrMultiplier));  // Clamp [0.2, 3.0]
+        double wrMultiplier = 1.0 + (contextWR - baseWR) * 2.0;  // Max 2.0x, Min 0.0x
+        wrMultiplier = MathMax(0.20, MathMin(2.5, wrMultiplier));  // Clamp [0.2, 2.5]
 
         // 2. Factor de performance EMA (más peso a resultados recientes)
         double emaFactor = 0.8 + (cell.emaPerformance * 0.4);  // 0.8x a 1.2x
@@ -1337,22 +1339,25 @@ public:
             streakBoost = MathMin(1.5, streakBoost);  // Máximo +50%
         }
 
-        // 4. Penalización por racha de pérdidas
+        // 4. Penalización por racha de pérdidas (FIX: Exponential decay instead of linear)
         double streakPenalty = 1.0;
-        if(cell.consecutiveLosses >= 3) {
-            streakPenalty = 1.0 - (cell.consecutiveLosses * 0.08);  // -8% por cada loss
-            streakPenalty = MathMax(0.4, streakPenalty);  // Mínimo -60%
+        if(cell.consecutiveLosses >= 2) {
+            // Exponential decay: 0.85 ^ losses (prevents negative values)
+            // 2 losses = 0.72x, 5 losses = 0.44x, 10 losses = 0.20x
+            streakPenalty = MathPow(0.85, (double)cell.consecutiveLosses);
+            streakPenalty = MathMax(0.20, streakPenalty);  // Hard floor at 0.20 (never completely disable)
         }
 
-        // 5. Factor de confianza (basado en tamaño de muestra)
-        double confidenceFactor = MathMin(1.0, cell.totalSignals / 30.0);  // Máximo en 30 muestras
-        confidenceFactor = 0.7 + (confidenceFactor * 0.3);  // 0.7x a 1.0x
+        // 5. Factor de confianza (FIX: Require at least 5 trades, full confidence at 25)
+        // Gradual curve: starts trusting at 5 trades, full confidence at 25 trades
+        double confidenceFactor = MathMin(1.0, cell.totalSignals / 25.0);
+        confidenceFactor = 0.5 + (confidenceFactor * 0.5);  // Base 0.5, ranges 0.5x to 1.0x
 
         //--- CÁLCULO FINAL ---
         double finalWeight = baseWeight * wrMultiplier * emaFactor * streakBoost * streakPenalty * confidenceFactor;
 
-        // Clamp de seguridad [0.05, 0.60]
-        finalWeight = MathMax(0.05, MathMin(0.60, finalWeight));
+        // Clamp de seguridad [0.05, 0.80] - FIX: Allow higher individual weights
+        finalWeight = MathMax(0.05, MathMin(0.80, finalWeight));
 
         return finalWeight;
     }
@@ -1446,8 +1451,16 @@ public:
             return result;
         }
 
-        // Calcular métricas finales
-        double differential = MathAbs(buyScore - sellScore) / totalScore;
+        // FIX: Differential with participation factor (prevents inflation at low conviction)
+        // Raw differential measures the gap between buy and sell
+        double rawDifferential = MathAbs(buyScore - sellScore);
+
+        // Participation factor: penalize differential if total participation is weak
+        // Assumes strong participation is at least 2.5 (half of 5 agents at full strength)
+        double participationFactor = MathMin(1.0, totalScore / 2.5);
+
+        // Adjusted differential: scales down when participation is low
+        double differential = (rawDifferential / (totalScore + 0.001)) * participationFactor;
 
         result.direction = (buyScore > sellScore) ? 1 : -1;
         result.strength = MathMin(1.0, differential);

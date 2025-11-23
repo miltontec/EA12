@@ -117,7 +117,9 @@ struct DirectionalMetrics {
     int buyCurrentStreak;
     int buyMaxWinStreak;
     int buyMaxLossStreak;
-    
+    double buyGrossProfit;  // FIX: Tracking for robust Profit Factor
+    double buyGrossLoss;    // FIX: Tracking for robust Profit Factor
+
     // Métricas SELL
     int sellTrades;
     int sellWins;
@@ -131,6 +133,8 @@ struct DirectionalMetrics {
     int sellCurrentStreak;
     int sellMaxWinStreak;
     int sellMaxLossStreak;
+    double sellGrossProfit; // FIX: Tracking for robust Profit Factor
+    double sellGrossLoss;   // FIX: Tracking for robust Profit Factor
     
     // Tiempos promedio
     int avgBarsInWinningTrade;
@@ -156,6 +160,8 @@ struct DirectionalMetrics {
         buyCurrentStreak = sellCurrentStreak = 0;
         buyMaxWinStreak = sellMaxWinStreak = 0;
         buyMaxLossStreak = sellMaxLossStreak = 0;
+        buyGrossProfit = sellGrossProfit = 0.0;  // FIX: Initialize gross profit/loss
+        buyGrossLoss = sellGrossLoss = 0.0;
         avgBarsInWinningTrade = avgBarsInLosingTrade = 0;
         avgMAE = avgMFE = 0.0;
         performanceMomentum = 0.0;
@@ -167,42 +173,72 @@ struct DirectionalMetrics {
         if(direction == VOTE_BUY || direction == VOTE_STRONG_BUY) {
             buyTrades++;
             buyProfit += profit;
-            
+
             if(won) {
                 buyWins++;
                 buyAvgWin = ((buyAvgWin * (buyWins - 1)) + profit) / buyWins;
+                buyGrossProfit += profit;  // FIX: Track gross profit
                 buyCurrentStreak = (buyCurrentStreak >= 0) ? buyCurrentStreak + 1 : 1;
                 buyMaxWinStreak = MathMax(buyMaxWinStreak, buyCurrentStreak);
             } else {
                 int losses = buyTrades - buyWins;
                 buyAvgLoss = ((buyAvgLoss * (losses - 1)) + MathAbs(profit)) / losses;
+                buyGrossLoss += MathAbs(profit);  // FIX: Track gross loss
                 buyCurrentStreak = (buyCurrentStreak <= 0) ? buyCurrentStreak - 1 : -1;
                 buyMaxLossStreak = MathMax(buyMaxLossStreak, MathAbs(buyCurrentStreak));
             }
-            
-            buyWinRate = (buyTrades > 0) ? (double)buyWins / buyTrades : 0.5;
-            buyProfitFactor = (buyAvgLoss > 0) ? (buyAvgWin * buyWinRate) / (buyAvgLoss * (1 - buyWinRate)) : 1.0;
-            buyExpectancy = (buyWinRate * buyAvgWin) - ((1 - buyWinRate) * buyAvgLoss);
+
+            // FIX 1: Laplace Smoothing for Win Rate (Bayesian estimator)
+            // Formula: (Wins + 1) / (TotalTrades + 2)
+            // Prevents extreme values (0% or 100%) with few samples
+            buyWinRate = (double)(buyWins + 1) / (double)(buyTrades + 2);
+
+            // FIX 2: Robust Profit Factor based on Gross Profit/Loss
+            // True PF = Sum(GrossProfit) / Sum(GrossLoss)
+            if(buyGrossLoss > 0) {
+                buyProfitFactor = buyGrossProfit / buyGrossLoss;
+            } else {
+                buyProfitFactor = (buyGrossProfit > 0) ? 10.0 : 1.0;  // Cap at 10.0 to avoid infinity
+            }
+
+            // FIX 3: Expectancy calculation (valid formula)
+            // NOTE: For multi-asset normalization, consider dividing by ATR or current price
+            buyExpectancy = (buyWinRate * buyAvgWin) - ((1.0 - buyWinRate) * buyAvgLoss);
             
         } else if(direction == VOTE_SELL || direction == VOTE_STRONG_SELL) {
             sellTrades++;
             sellProfit += profit;
-            
+
             if(won) {
                 sellWins++;
                 sellAvgWin = ((sellAvgWin * (sellWins - 1)) + profit) / sellWins;
+                sellGrossProfit += profit;  // FIX: Track gross profit
                 sellCurrentStreak = (sellCurrentStreak >= 0) ? sellCurrentStreak + 1 : 1;
                 sellMaxWinStreak = MathMax(sellMaxWinStreak, sellCurrentStreak);
             } else {
                 int losses = sellTrades - sellWins;
                 sellAvgLoss = ((sellAvgLoss * (losses - 1)) + MathAbs(profit)) / losses;
+                sellGrossLoss += MathAbs(profit);  // FIX: Track gross loss
                 sellCurrentStreak = (sellCurrentStreak <= 0) ? sellCurrentStreak - 1 : -1;
                 sellMaxLossStreak = MathMax(sellMaxLossStreak, MathAbs(sellCurrentStreak));
             }
-            
-            sellWinRate = (sellTrades > 0) ? (double)sellWins / sellTrades : 0.5;
-            sellProfitFactor = (sellAvgLoss > 0) ? (sellAvgWin * sellWinRate) / (sellAvgLoss * (1 - sellWinRate)) : 1.0;
-            sellExpectancy = (sellWinRate * sellAvgWin) - ((1 - sellWinRate) * sellAvgLoss);
+
+            // FIX 1: Laplace Smoothing for Win Rate (Bayesian estimator)
+            // Formula: (Wins + 1) / (TotalTrades + 2)
+            // Prevents extreme values (0% or 100%) with few samples
+            sellWinRate = (double)(sellWins + 1) / (double)(sellTrades + 2);
+
+            // FIX 2: Robust Profit Factor based on Gross Profit/Loss
+            // True PF = Sum(GrossProfit) / Sum(GrossLoss)
+            if(sellGrossLoss > 0) {
+                sellProfitFactor = sellGrossProfit / sellGrossLoss;
+            } else {
+                sellProfitFactor = (sellGrossProfit > 0) ? 10.0 : 1.0;  // Cap at 10.0 to avoid infinity
+            }
+
+            // FIX 3: Expectancy calculation (valid formula)
+            // NOTE: For multi-asset normalization, consider dividing by ATR or current price
+            sellExpectancy = (sellWinRate * sellAvgWin) - ((1.0 - sellWinRate) * sellAvgLoss);
         }
         
         // Actualizar tiempos y excursiones
@@ -224,22 +260,34 @@ struct DirectionalMetrics {
     }
     
     void CalculatePerformanceMomentum() {
+        // FIX 4: Apply Laplace Smoothing to overall win rate as well
         // Comparar performance reciente vs histórica
-        double overallWinRate = (buyTrades + sellTrades > 0) ? 
-            (double)(buyWins + sellWins) / (buyTrades + sellTrades) : 0.5;
-        
-        performanceMomentum = (recentWinRate - overallWinRate) * 2; // Rango -1 a 1
+        int totalTrades = buyTrades + sellTrades;
+        int totalWins = buyWins + sellWins;
+        double overallWinRate = (double)(totalWins + 1) / (double)(totalTrades + 2);
+
+        performanceMomentum = (recentWinRate - overallWinRate) * 2.0; // Rango -1 a 1
         performanceMomentum = MathMax(-1.0, MathMin(1.0, performanceMomentum));
     }
     
     void UpdateConfidenceScore() {
-        // Score basado en múltiples factores
-        double wrScore = (buyWinRate + sellWinRate) / 2;
-        double pfScore = MathMin(1.0, (buyProfitFactor + sellProfitFactor) / 4);
-        double expScore = MathMax(0.0, MathMin(1.0, (buyExpectancy + sellExpectancy) / 200));
-        double momentumScore = (performanceMomentum + 1) / 2;
-        
-        confidenceScore = (wrScore * 0.3 + pfScore * 0.3 + expScore * 0.2 + momentumScore * 0.2);
+        // FIX 5: Universal Normalization for all score components
+        double wrScore = (buyWinRate + sellWinRate) / 2.0;
+
+        // Profit Factor normalized (2.5 PF is considered excellent)
+        double pfAvg = (buyProfitFactor + sellProfitFactor) / 2.0;
+        double pfScore = MathMin(1.0, pfAvg / 2.5);
+
+        // FIX: Use Tanh for asset-independent expectancy normalization
+        // Tanh maps (-inf, +inf) to (-1, 1), we normalize by dividing by a reference scale (100)
+        double totalExp = buyExpectancy + sellExpectancy;
+        double expScore = MathTanh(totalExp / 100.0);  // Tanh output between -1 and 1
+        expScore = MathMax(0.0, expScore);  // Only value positive expectancy
+
+        double momentumScore = (performanceMomentum + 1.0) / 2.0;
+
+        // Balanced weighting: More emphasis on consistency (WR) and Momentum
+        confidenceScore = (wrScore * 0.35) + (pfScore * 0.25) + (expScore * 0.20) + (momentumScore * 0.20);
         confidenceScore = MathMax(0.1, MathMin(1.0, confidenceScore));
     }
     
