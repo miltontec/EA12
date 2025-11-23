@@ -5317,24 +5317,28 @@ public:
 // Reemplaza CQuantumWeightSystem::GetQuantumWeight con esto o actualiza la llamada en MetaLearningSystem
 double GetAgentWeight(int agent_id) {
     if (agent_id < 0 || agent_id >= QUANTUM_MAX_AGENTS) return 0.0;
-    
-    // FÓRMULA DE APRENDIZAJE REAL:
+
+    // FIX: FÓRMULA DE APRENDIZAJE REAL con Laplace Smoothing
     // Peso = (WinRate * Consistencia) * Penalización_Errores_Recientes
-    
-    double winRate = (m_agentStats[agent_id].trades > 5) 
-                     ? (double)m_agentStats[agent_id].wins / (double)m_agentStats[agent_id].trades 
-                     : 0.5; // 50% por defecto si es nuevo
-                     
-    // Penalización severa por racha de pérdidas (Exponential Decay)
-    // Si pierde 3 veces seguidas, el peso baja: 1.0 -> 0.7 -> 0.49 -> 0.34
-    double streakPenalty = MathPow(0.7, m_agentStats[agent_id].consecutive_losses);
-    
+
+    // FIX: Usar Laplace Smoothing para Win Rate (Bayesian estimator)
+    // Formula: (Wins + 1) / (Trades + 2) - Previene extremos con pocas muestras
+    int trades = m_agentStats[agent_id].trades;
+    int wins = m_agentStats[agent_id].wins;
+    double winRate = (double)(wins + 1) / (double)(trades + 2);
+
+    // FIX: Penalización exponencial consistente con ContextualVotingSystem (0.85^N)
+    // Si pierde 3 veces seguidas: 1.0 -> 0.85 -> 0.72 -> 0.61
+    double streakPenalty = (m_agentStats[agent_id].consecutive_losses >= 2) ?
+                           MathPow(0.85, m_agentStats[agent_id].consecutive_losses) : 1.0;
+    streakPenalty = MathMax(0.20, streakPenalty);  // Hard floor at 0.20
+
     // Recuperación lenta: La penalización interna se cura un 5% por trade
     m_agentStats[agent_id].penalty_factor = MathMin(1.0, m_agentStats[agent_id].penalty_factor + 0.05);
-    
+
     // Peso Final = Base * WinRate * PenalizaciónRacha * PenalizaciónHistórica
     double finalWeight = 1.0 * winRate * streakPenalty * m_agentStats[agent_id].penalty_factor;
-    
+
     // Limitar peso mínimo para que no muera el agente (siempre 0.1 de oportunidad)
     return MathMax(0.1, finalWeight * 2.0); // Multiplicamos por 2 para normalizar alrededor de 1.0
 }
@@ -5348,8 +5352,11 @@ double GetAgentWeight(int agent_id) {
 
     double GetAgentWinRate(int agent_id) {
         if(agent_id < 0 || agent_id >= QUANTUM_MAX_AGENTS) return 0.0;
-        return (m_agentStats[agent_id].trades > 0 ? 
-               (double)m_agentStats[agent_id].wins / (double)m_agentStats[agent_id].trades : 0.0);
+        // FIX: Usar Laplace Smoothing (Bayesian estimator)
+        // Formula: (Wins + 1) / (Trades + 2)
+        int wins = m_agentStats[agent_id].wins;
+        int trades = m_agentStats[agent_id].trades;
+        return (double)(wins + 1) / (double)(trades + 2);
     }
 
     string GetAgentPrivilegeLevel(int agent_id) {
